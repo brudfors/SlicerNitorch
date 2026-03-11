@@ -14,15 +14,7 @@ GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](ht
 Open 3D Slicer's Python console (`View > Python Console`) and run:
 
 ```python
-pip_install("nitorch")
-pip_install("nibabel scipy")
-```
-
-If installing nitorch from a local source checkout:
-
-```python
-import subprocess, sys
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", "/path/to/nitorch"])
+pip_install("nitorch @ git+https://github.com/balbasty/nitorch.git@master")
 ```
 
 ### 2. Add the module path
@@ -31,7 +23,7 @@ subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", "/path/to/n
 2. Go to **Edit > Application Settings > Modules**
 3. Under **Additional module paths**, click **Add** and browse to:
    ```
-   /path/to/nitorch-workstation/slicer_modules/NITorchRegister
+   /path/to/SlicerNitorch
    ```
 4. Restart 3D Slicer
 
@@ -112,7 +104,7 @@ GPU acceleration requires CUDA to be available in Slicer's Python environment. T
 | Issue | Solution |
 |---|---|
 | `ModuleNotFoundError: nitorch` | Install nitorch in Slicer's Python (see above) |
-| `ModuleNotFoundError: nibabel` | Run `pip_install("nibabel")` in Slicer's Python console |
+| `ModuleNotFoundError: nibabel` | Reinstall nitorch (nibabel is a transitive dependency) |
 | No CUDA devices listed | Slicer's bundled Python may not include CUDA-enabled PyTorch; install a CUDA build manually |
 | Registration is slow on CPU | Use a CUDA device or reduce resolution of input volumes |
 | Out of memory on GPU | Switch to CPU or downsample input volumes |
