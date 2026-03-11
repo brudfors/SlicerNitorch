@@ -2,6 +2,8 @@
 
 GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](https://github.com/balbasty/nitorch), directly inside 3D Slicer.
 
+![SlicerNitorch](SlicerNitorch.png)
+
 ## Prerequisites
 
 - 3D Slicer >= 5.x
@@ -99,13 +101,3 @@ Results accumulate across runs — select different transforms and click Compute
 
 GPU acceleration requires CUDA to be available in Slicer's Python environment. The Device dropdown automatically detects available CUDA devices. If no CUDA devices appear, registration will run on CPU.
 
-## Troubleshooting
-
-| Issue | Solution |
-|---|---|
-| `ModuleNotFoundError: nitorch` | Install nitorch in Slicer's Python (see above) |
-| `ModuleNotFoundError: nibabel` | Reinstall nitorch (nibabel is a transitive dependency) |
-| No CUDA devices listed | Slicer's bundled Python may not include CUDA-enabled PyTorch; install a CUDA build manually |
-| Registration is slow on CPU | Use a CUDA device or reduce resolution of input volumes |
-| Out of memory on GPU | Switch to CPU or downsample input volumes |
-| Folding artefacts in registered image | Increase Lambda Global or Lambda Bending to strengthen regularization |
