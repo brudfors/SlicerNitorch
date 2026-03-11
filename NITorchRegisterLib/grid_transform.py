@@ -84,49 +84,6 @@ def compose_deformation_grid(fixed_shape, fixed_affine, affine_sqrt,
     return grid
 
 
-def reslice_volume(grid, fixed_affine, moving_data, moving_affine,
-                   interpolation=1, device='cpu'):
-    """Reslice a volume using the deformation grid. Returns tensor (no file I/O).
-
-    Parameters
-    ----------
-    grid : torch.Tensor
-        (X, Y, Z, 3) deformation grid in RAS.
-    fixed_affine : torch.Tensor
-        (4, 4) voxel-to-world of the fixed image (unused but kept for API
-        consistency; grid is already in RAS).
-    moving_data : torch.Tensor
-        (*spatial) moving volume data.
-    moving_affine : torch.Tensor
-        (4, 4) voxel-to-world of the moving volume.
-    interpolation : int
-        Interpolation order (1=linear, 0=nearest).
-    device : str
-        Torch device.
-
-    Returns
-    -------
-    resliced : torch.Tensor
-        (*spatial) resliced volume in fixed space.
-    """
-    moving_affine = moving_affine.to(dtype=torch.float64, device=device)
-    moving_data = moving_data.to(dtype=torch.float64, device=device)
-    grid = grid.to(dtype=torch.float64, device=device)
-
-    # Squeeze trailing singleton dims
-    while moving_data.ndim > 3 and moving_data.shape[-1] == 1:
-        moving_data = moving_data.squeeze(-1)
-
-    # Convert RAS grid to moving voxel coordinates
-    grid_mov_vox = affine_transform(grid, torch.linalg.inv(moving_affine))
-
-    # grid_pull expects (batch, channel, *spatial), (batch, *spatial, dim)
-    dat_batch = moving_data.unsqueeze(0).unsqueeze(0)
-    grid_batch = grid_mov_vox.unsqueeze(0)
-    resliced = grid_pull(dat_batch, grid_batch, interpolation=interpolation,
-                         bound='zero')
-    return resliced[0, 0]
-
 
 def grid_to_slicer_displacement(grid, fixed_shape, fixed_affine, device='cpu'):
     """Convert deformation grid to Slicer displacement format.
