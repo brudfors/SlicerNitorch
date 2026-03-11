@@ -7,7 +7,7 @@ GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](ht
 ## Prerequisites
 
 - 3D Slicer >= 5.x
-- CUDA-capable GPU (optional, for faster registration)
+- NVIDIA GPU (optional but recommended, for (much) faster registration)
 
 ## Installation
 
@@ -37,9 +37,9 @@ The module has two tabs: **Registration** and **Validation**.
 
 ### Registration Tab
 
-1. Load fixed and moving volumes into Slicer
+1. Load fixed and moving volumes/labels into Slicer
 2. Open **NITorch Register** from the Modules menu
-3. Select the fixed and moving volumes
+3. Select the fixed and moving volumes/labels
 4. Check **Categorical** if inputs are label maps (restricts loss to Dice)
 5. Choose a loss function (LCC, MSE, NMI, or Dice)
 6. Select the computation device (CPU or CUDA; defaults to first CUDA device if available)
@@ -49,7 +49,7 @@ The module will run affine + nonlinear (SVF) registration and create a grid tran
 
 ### Output Transform
 
-Each registration run creates a new grid transform named `NITorch_001_lcc_fixed_to_moving` (with incrementing counter and loss name). Use the **Output Transform** selector to switch between previously computed transforms.
+Each registration run creates a new grid transform named, eg, `NITorch_001_lcc_fixed_to_moving` (with incrementing counter and loss name). Use the **Output Transform** selector to switch between previously computed transforms.
 
 ### Parameters
 
@@ -96,8 +96,4 @@ The **Validation** tab computes Dice overlap scores between fixed and moving seg
 The **Summary** table shows the mean Dice (Before and After) for each computed result. Use the **Result** selector to view per-label Dice scores for a specific run. The **Mean Dice** label shows the selected result's mean. Green highlighting indicates improvement, red indicates degradation.
 
 Results accumulate across runs — select different transforms and click Compute Dice again to compare multiple registrations. Use **Clear Results** to reset.
-
-## GPU Support
-
-GPU acceleration requires CUDA to be available in Slicer's Python environment. The Device dropdown automatically detects available CUDA devices. If no CUDA devices appear, registration will run on CPU.
 
