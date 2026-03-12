@@ -16,7 +16,7 @@ GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](ht
 Open 3D Slicer's Python console (`View > Python Console`) and run:
 
 ```python
-pip_install("nitorch @ git+https://github.com/balbasty/nitorch.git@master")
+pip_install("git+https://github.com/balbasty/nitorch.git@master")
 ```
 
 ### 2. Add the module path
