@@ -1329,9 +1329,10 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
     def _createGridTransformNode(disp_np, affine_np, fixed_shape):
         """Create a grid transform node from a displacement array.
 
-        Writes a transient temp NIfTI (using struct, no nibabel dependency),
-        loads it via slicer.util.loadTransform which handles all coordinate
-        conventions correctly, then deletes the file immediately.
+        Builds the vtkOrientedGridTransform entirely in memory using VTK,
+        avoiding any nibabel dependency or disk I/O. The full IJK→RAS
+        affine (including shear, if any) is encoded in the grid direction
+        matrix with unit voxel spacing.
 
         Parameters
         ----------
@@ -1346,59 +1347,54 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         -------
         transformNode : vtkMRMLGridTransformNode
         """
-        import struct
-        import tempfile
+        import vtk
         import numpy as np
+        from vtk.util.numpy_support import numpy_to_vtk
 
-        # Build a minimal NIfTI-1 header (348 bytes)
-        header = bytearray(348)
-        shape = disp_np.shape  # (X, Y, Z, 1, 3)
-        ndim = len(shape)
+        # Squeeze (X, Y, Z, 1, 3) -> (X, Y, Z, 3)
+        disp = disp_np.squeeze()
 
-        # sizeof_hdr
-        struct.pack_into('<i', header, 0, 348)
-        # dim: [ndim, d1, d2, ..., d7]  (8 shorts starting at offset 40)
-        dims = [ndim] + list(shape) + [1] * (7 - ndim)
-        struct.pack_into('<' + 'h' * 8, header, 40, *dims)
-        # datatype = 16 (FLOAT32), bitpix = 32
-        struct.pack_into('<h', header, 70, 16)
-        struct.pack_into('<h', header, 72, 32)
-        # pixdim: extract voxel spacing from affine to match sform
-        spacing = np.sqrt((affine_np[:3, :3] ** 2).sum(axis=0))
-        pixdim = [1.0, float(spacing[0]), float(spacing[1]), float(spacing[2]),
-                  1.0, 1.0, 1.0, 1.0]
-        struct.pack_into('<' + 'f' * 8, header, 76, *pixdim)
-        # vox_offset = 352 (header 348 + 4-byte extension pad)
-        struct.pack_into('<f', header, 108, 352.0)
-        # sform_code = 1 (scanner anat)
-        struct.pack_into('<h', header, 254, 1)
-        # srow_x, srow_y, srow_z (affine rows, 4 floats each)
+        # Slicer grid transforms expect LPS displacements — flip x and y
+        disp_lps = disp.copy()
+        disp_lps[..., 0] *= -1
+        disp_lps[..., 1] *= -1
+
+        # vtkImageData with unit voxel spacing — the full affine goes in the
+        # direction matrix, so shear (if any) is preserved.
+        grid_image = vtk.vtkImageData()
+        grid_image.SetDimensions(fixed_shape[0], fixed_shape[1], fixed_shape[2])
+        grid_image.SetSpacing(1.0, 1.0, 1.0)
+
+        origin_ras = affine_np[:3, 3]
+        grid_image.SetOrigin(
+            float(-origin_ras[0]), float(-origin_ras[1]), float(origin_ras[2]))
+
+        # Direction = full 3x3 linear part with rows 0,1 negated (RAS -> LPS)
+        direction_lps = affine_np[:3, :3].copy()
+        direction_lps[0, :] *= -1
+        direction_lps[1, :] *= -1
+
+        # Flatten to (N, 3), C-contiguous, with X-axis varying fastest to
+        # match vtkImageData's point-data ordering.
+        flat = np.ascontiguousarray(
+            disp_lps.reshape(-1, 3, order='F'), dtype=np.float64)
+        vtk_arr = numpy_to_vtk(flat, deep=True)
+        vtk_arr.SetName("displacement")
+        vtk_arr.SetNumberOfComponents(3)
+        grid_image.GetPointData().SetVectors(vtk_arr)
+
+        grid_transform = slicer.vtkOrientedGridTransform()
+        grid_transform.SetDisplacementGridData(grid_image)
+
+        dir_matrix = vtk.vtkMatrix4x4()
         for i in range(3):
-            struct.pack_into('<4f', header, 280 + i * 16,
-                             *affine_np[i, :].astype(np.float32).tolist())
-        # intent_code = 1006 (NIFTI_INTENT_DISPVECT)
-        struct.pack_into('<h', header, 68, 1006)
-        # magic = "n+1\0"
-        header[344:348] = b'n+1\x00'
+            for j in range(3):
+                dir_matrix.SetElement(i, j, float(direction_lps[i, j]))
+        grid_transform.SetGridDirectionMatrix(dir_matrix)
 
-        # 4-byte extension block (no extensions)
-        ext = b'\x00\x00\x00\x00'
-
-        # Write to temp file and load via Slicer
-        tmpdir = tempfile.mkdtemp(prefix="nitorch_grid_")
-        grid_path = os.path.join(tmpdir, "Grid.nii")
-        try:
-            data = disp_np.astype(np.float32).tobytes(order='F')
-            with open(grid_path, 'wb') as f:
-                f.write(bytes(header))
-                f.write(ext)
-                f.write(data)
-            transformNode = slicer.util.loadTransform(grid_path)
-        finally:
-            import shutil
-            try:
-                shutil.rmtree(tmpdir)
-            except OSError:
-                pass
+        transformNode = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLGridTransformNode")
+        transformNode.SetAndObserveTransformFromParent(grid_transform)
+        transformNode.CreateDefaultDisplayNodes()
 
         return transformNode
