@@ -16,8 +16,20 @@ GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](ht
 Open 3D Slicer's Python console (`View > Python Console`) and run:
 
 ```python
+pip_install("torch_interpol>=0.3.0")
 pip_install("git+https://github.com/balbasty/nitorch.git@master")
 ```
+
+> **Important:** install nitorch as a regular (non-editable) package. Using `pip install -e ./nitorch` can silently shadow the install when the SlicerNitorch module sits next to a `nitorch/` source repo (see [Troubleshooting](#troubleshooting)).
+
+For GPU acceleration, nitorch needs its C++/CUDA extensions compiled against Slicer's bundled PyTorch. From a shell on the same machine, with Slicer closed and a matching GCC + the CUDA toolkit on PATH:
+
+```bash
+cd /path/to/nitorch-source
+NI_COMPILED_BACKEND=C /path/to/Slicer/bin/PythonSlicer -m pip install --no-build-isolation .
+```
+
+Without `NI_COMPILED_BACKEND=C`, nitorch falls back to a pure-PyTorch TorchScript backend (slower but no compilation required).
 
 ### 2. Add the module path
 
@@ -96,4 +108,14 @@ The **Validation** tab computes Dice overlap scores between fixed and moving seg
 The **Summary** table shows the mean Dice (Before and After) for each computed result. Use the **Result** selector to view per-label Dice scores for a specific run. The **Mean Dice** label shows the selected result's mean. Green highlighting indicates improvement, red indicates degradation.
 
 Results accumulate across runs — select different transforms and click Compute Dice again to compare multiple registrations. Use **Clear Results** to reset.
+
+## Troubleshooting
+
+### `ImportError: cannot import name 'compiled_backend' from 'nitorch' (unknown location)`
+
+Two known causes:
+
+**(a) Stale `torch_interpol`.** Versions before 0.3.0 use a raw `@torch.jit.script` decorator that collides with itself under recent PyTorch as torch.jit's compilation unit accumulates type registrations. Fix: upgrade in Slicer's Python — `pip_install("torch_interpol>=0.3.0")` — and fully restart Slicer.
+
+**(b) Editable nitorch install shadowed by a sibling source dir.** If nitorch was installed with `pip install -e /path/to/nitorch-source` *and* the SlicerNitorch module's parent directory contains a `nitorch/` source repo as a sibling, Slicer (which auto-adds the parent of "Additional module paths" to `sys.path`) causes Python's `PathFinder` to treat the sibling `nitorch/` as a namespace package, shadowing the editable install. The symptom is misleading: `import nitorch` appears to succeed but produces an empty namespace package, and any later `from nitorch import compiled_backend` fails as above. Fix: reinstall nitorch non-editable (see step 1 above), then fully restart Slicer.
 
