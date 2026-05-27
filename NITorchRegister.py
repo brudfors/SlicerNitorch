@@ -1380,8 +1380,8 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
             disp_lps.reshape(-1, 3, order='F'), dtype=np.float64)
         vtk_arr = numpy_to_vtk(flat, deep=True)
         vtk_arr.SetName("displacement")
-        vtk_arr.SetNumberOfComponents(3)
-        grid_image.GetPointData().SetVectors(vtk_arr)
+        # vtkGridTransform reads the displacement via GetScalars() first
+        grid_image.GetPointData().SetScalars(vtk_arr)
 
         grid_transform = slicer.vtkOrientedGridTransform()
         grid_transform.SetDisplacementGridData(grid_image)
