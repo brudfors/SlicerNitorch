@@ -52,12 +52,6 @@ def compose_deformation_grid(fixed_shape, fixed_affine, affine_sqrt,
     """
     fixed_affine = fixed_affine.to(dtype=torch.float64, device=device)
     affine_sqrt = affine_sqrt.to(dtype=torch.float64, device=device)
-    disp_affine = disp_affine.to(dtype=torch.float64, device=device)
-    displacement = displacement.to(dtype=torch.float64, device=device)
-
-    # Squeeze extra dims from displacement
-    while displacement.ndim > 4:
-        displacement = displacement.squeeze(-2)
 
     # 1. Identity grid in fixed voxel space
     id_grid = identity_grid(fixed_shape, dtype=torch.float64, device=device)
@@ -68,15 +62,20 @@ def compose_deformation_grid(fixed_shape, fixed_affine, affine_sqrt,
     # 3. First half of affine (square root)
     grid = affine_transform(grid, affine_sqrt)
 
-    # 4. Sample displacement field at current grid positions
-    grid = affine_transform(grid, torch.linalg.inv(disp_affine))
-    disp_bcxyz = displacement.permute(3, 0, 1, 2).unsqueeze(0)
-    grid_batch = grid.unsqueeze(0)
-    sampled_disp = grid_pull(disp_bcxyz, grid_batch, bound='zero',
-                             extrapolate=True)
-    sampled_disp = sampled_disp[0].permute(1, 2, 3, 0)
-    grid = affine_transform(grid, disp_affine)
-    grid = grid + sampled_disp
+    # 4. Sample displacement field at current grid positions (if available)
+    if displacement is not None and disp_affine is not None:
+        disp_affine = disp_affine.to(dtype=torch.float64, device=device)
+        displacement = displacement.to(dtype=torch.float64, device=device)
+        while displacement.ndim > 4:
+            displacement = displacement.squeeze(-2)
+        grid = affine_transform(grid, torch.linalg.inv(disp_affine))
+        disp_bcxyz = displacement.permute(3, 0, 1, 2).unsqueeze(0)
+        grid_batch = grid.unsqueeze(0)
+        sampled_disp = grid_pull(disp_bcxyz, grid_batch, bound='zero',
+                                 extrapolate=True)
+        sampled_disp = sampled_disp[0].permute(1, 2, 3, 0)
+        grid = affine_transform(grid, disp_affine)
+        grid = grid + sampled_disp
 
     # 5. Second half of affine (square root)
     grid = affine_transform(grid, affine_sqrt)

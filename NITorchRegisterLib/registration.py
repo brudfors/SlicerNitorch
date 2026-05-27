@@ -8,10 +8,11 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
              is_label=False, affine_basis='similitude', reg_lambda=5,
              penalty_absolute=0.0001, penalty_membrane=0.001,
              penalty_bending=0.2, penalty_lame=(0.05, 0.2),
-             aff_max_iter=128, aff_tolerance=1e-4,
+             aff_max_iter=256, aff_tolerance=1e-6,
              nl_max_iter=64, nl_tolerance=1e-3,
              outer_max_iter=64, outer_tolerance=1e-3,
-             pyramid_levels=None, device='cpu', verbose=False):
+             pyramid_levels=None, bound='zero', crit='diff',
+             affine_only=False, device='cpu', verbose=1):
     """Run affine + nonlinear (SVF) registration.
 
     All inputs are in-memory tensors — no file I/O.
@@ -94,24 +95,24 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
     fix_dat, fix_mask, fix_aff = preproc_image(
         fixed_dat, label=is_label, rescale=rescale,
         world=fixed_affine,
-        fwhm=1, bound='dct2', dim=3, device=device,
+        fwhm=1, bound=bound, dim=3, device=device,
     )
     mov_dat, mov_mask, mov_aff = preproc_image(
         moving_dat, label=is_label, rescale=rescale,
         world=moving_affine,
-        fwhm=1, bound='dct2', dim=3, device=device,
+        fwhm=1, bound=bound, dim=3, device=device,
     )
 
     # Create image pyramids
     fix_img = make_image(
         fix_dat, mask=fix_mask, affine=fix_aff,
         pyramid=pyramid_levels, pyramid_method='gaussian',
-        bound='dct2', extrapolate=False,
+        bound=bound, extrapolate=False,
     )
     mov_img = make_image(
         mov_dat, mask=mov_mask, affine=mov_aff,
         pyramid=pyramid_levels, pyramid_method='gaussian',
-        bound='dct2', extrapolate=False,
+        bound=bound, extrapolate=False,
     )
 
     # Loss
@@ -129,6 +130,28 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
     # Affine model
     affine_model = make_affine(basis=affine_basis, position='symmetric')
 
+    # Optimizers
+    order = loss_obj.order
+    optim_name = 'gn' if order >= 2 else 'lbfgs'
+    affine_optim = make_affine_optim(
+        optim_name, order, max_iter=aff_max_iter, tolerance=aff_tolerance,
+        crit=crit,
+    )
+
+    if affine_only:
+        # Affine-only registration
+        verbose_level = int(verbose)
+        affine_model, _ = run(
+            loss_list, affine=affine_model, nonlin=None,
+            affine_optim=affine_optim, nonlin_optim=None,
+            pyramid=True, interleaved=False, progressive=False,
+            max_iter=1, tolerance=0,
+            verbose=verbose_level, framerate=0,
+        )
+
+        affine_sqrt = affine_model.exp(cache_result=True, recompute=True)
+        return affine_sqrt, None, None
+
     # Nonlinear model (SVF)
     images = list(loss_list[-1].images())
     penalty = {
@@ -142,15 +165,9 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
         voxel_size=[100, '%'], device=device,
     )
 
-    # Optimizers
-    order = loss_obj.order
-    optim_name = 'gn' if order >= 2 else 'lbfgs'
-    affine_optim = make_affine_optim(
-        optim_name, order, max_iter=aff_max_iter, tolerance=aff_tolerance,
-    )
     nonlin_optim = make_nonlin_optim(
         optim_name, order, max_iter=nl_max_iter, tolerance=nl_tolerance,
-        nonlin=nonlin_model,
+        crit=crit, nonlin=nonlin_model,
     )
 
     # Run registration

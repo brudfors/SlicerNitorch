@@ -190,7 +190,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Loss function
         self.lossCombo = qt.QComboBox()
-        self._intensityLosses = [("LCC", "lcc"), ("MSE", "mse"), ("NMI", "nmi")]
+        self._intensityLosses = [("LCC", "lcc"), ("NCC", "cc"), ("MSE", "mse"), ("NMI", "nmi")]
         self._categoricalLosses = [("Dice", "dice")]
         for label, value in self._intensityLosses:
             self.lossCombo.addItem(label, value)
@@ -226,7 +226,14 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.transformSelector.noneDisplay = "None"
         self.transformSelector.setMRMLScene(slicer.mrmlScene)
         self.transformSelector.setToolTip("Select a grid transform to apply.")
-        regLayout.addRow("Output Transform:", self.transformSelector)
+        self.clearTransformsButton = qt.QPushButton("Clear")
+        self.clearTransformsButton.setToolTip(
+            "Remove all computed NITorch transforms from the scene.")
+        self.clearTransformsButton.clicked.connect(self._onClearTransforms)
+        transformRow = qt.QHBoxLayout()
+        transformRow.addWidget(self.transformSelector, 1)
+        transformRow.addWidget(self.clearTransformsButton, 0)
+        regLayout.addRow("Output Transform:", transformRow)
 
         # Register button
         self.registerButton = qt.QPushButton("Run Registration")
@@ -245,26 +252,48 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         advancedLayout = qt.QFormLayout(advancedCollapsible)
 
-        # --- Parameters ordered alphabetically ---
-
+        # Affine basis + Affine only (same row)
         self.affineBasisCombo = qt.QComboBox()
         self.affineBasisCombo.addItems([
-            "similitude", "affine", "rigid", "rotation", "translation"])
+            "rigid", "similitude", "affine", "rotation", "translation"])
         self.affineBasisCombo.setToolTip(
             "Degrees of freedom for the affine transform.")
-        advancedLayout.addRow("Affine Basis:", self.affineBasisCombo)
+        self.affineOnlyCheck = qt.QCheckBox("Affine Only")
+        self.affineOnlyCheck.checked = False
+        self.affineOnlyCheck.setToolTip(
+            "Run only affine registration (no nonlinear deformation). "
+            "Useful for checking affine alignment before full registration.")
+        self.affineOnlyCheck.toggled.connect(self._onAffineOnlyToggled)
+        affineBasisRow = qt.QHBoxLayout()
+        affineBasisRow.addWidget(self.affineBasisCombo, 1)
+        affineBasisRow.addWidget(self.affineOnlyCheck, 0)
+        advancedLayout.addRow("Affine Basis:", affineBasisRow)
+
+        self.pyramidLevelsEdit = qt.QLineEdit("0, 1, 2")
+        self.pyramidLevelsEdit.setToolTip(
+            "Comma-separated pyramid levels (0=finest). "
+            "More levels = coarser initial alignment.")
+        advancedLayout.addRow("Pyramid Levels:", self.pyramidLevelsEdit)
+
+        self.regLambdaSpin = qt.QDoubleSpinBox()
+        self.regLambdaSpin.setRange(0.01, 1000.0)
+        self.regLambdaSpin.setSingleStep(1.0)
+        self.regLambdaSpin.setValue(10.0)
+        self.regLambdaSpin.setToolTip(
+            "Global scaling factor applied to all individual penalty values.")
+        advancedLayout.addRow("Lambda Global:", self.regLambdaSpin)
 
         self.affMaxIterSpin = qt.QSpinBox()
         self.affMaxIterSpin.setRange(1, 1000)
-        self.affMaxIterSpin.setValue(128)
+        self.affMaxIterSpin.setValue(256)
         self.affMaxIterSpin.setToolTip("Max iterations for affine optimizer (per pyramid level).")
         advancedLayout.addRow("Affine Max Iter:", self.affMaxIterSpin)
 
         self.affTolSpin = qt.QDoubleSpinBox()
-        self.affTolSpin.setDecimals(4)
-        self.affTolSpin.setRange(0.0001, 1.0)
-        self.affTolSpin.setSingleStep(0.001)
-        self.affTolSpin.setValue(0.0001)
+        self.affTolSpin.setDecimals(6)
+        self.affTolSpin.setRange(0.000001, 1.0)
+        self.affTolSpin.setSingleStep(0.0001)
+        self.affTolSpin.setValue(0.000001)
         self.affTolSpin.setToolTip("Convergence tolerance for affine optimizer.")
         advancedLayout.addRow("Affine Tolerance:", self.affTolSpin)
 
@@ -276,21 +305,59 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         advancedLayout.addRow("Global Max Iter:", self.outerMaxIterSpin)
 
         self.outerTolSpin = qt.QDoubleSpinBox()
-        self.outerTolSpin.setDecimals(4)
-        self.outerTolSpin.setRange(0.0001, 1.0)
-        self.outerTolSpin.setSingleStep(0.001)
+        self.outerTolSpin.setDecimals(6)
+        self.outerTolSpin.setRange(0.000001, 1.0)
+        self.outerTolSpin.setSingleStep(0.0001)
         self.outerTolSpin.setValue(0.0010)
         self.outerTolSpin.setToolTip(
             "Convergence tolerance for outer interleaved optimization.")
         advancedLayout.addRow("Global Tolerance:", self.outerTolSpin)
 
-        self.regLambdaSpin = qt.QDoubleSpinBox()
-        self.regLambdaSpin.setRange(0.01, 1000.0)
-        self.regLambdaSpin.setSingleStep(1.0)
-        self.regLambdaSpin.setValue(5.0)
-        self.regLambdaSpin.setToolTip(
-            "Global scaling factor applied to all individual penalty values.")
-        advancedLayout.addRow("Lambda Global:", self.regLambdaSpin)
+        self.nlMaxIterSpin = qt.QSpinBox()
+        self.nlMaxIterSpin.setRange(1, 1000)
+        self.nlMaxIterSpin.setValue(64)
+        self.nlMaxIterSpin.setToolTip("Max iterations for nonlinear optimizer (per pyramid level).")
+        advancedLayout.addRow("Nonlin Max Iter:", self.nlMaxIterSpin)
+
+        self.nlTolSpin = qt.QDoubleSpinBox()
+        self.nlTolSpin.setDecimals(6)
+        self.nlTolSpin.setRange(0.000001, 1.0)
+        self.nlTolSpin.setSingleStep(0.0001)
+        self.nlTolSpin.setValue(0.0010)
+        self.nlTolSpin.setToolTip("Convergence tolerance for nonlinear optimizer.")
+        advancedLayout.addRow("Nonlin Tolerance:", self.nlTolSpin)
+
+        # --- Advanced subsection (collapsed by default) ---
+        advSubCollapsible = slicer.qMRMLCollapsibleButton()
+        advSubCollapsible.text = "Advanced"
+        advSubCollapsible.collapsed = True
+        advancedLayout.addRow(advSubCollapsible)
+
+        advSubLayout = qt.QFormLayout(advSubCollapsible)
+
+        # Boundary condition
+        self.boundCombo = qt.QComboBox()
+        self.boundCombo.addItems(["zero", "dct2", "replicate", "reflect", "mirror", "circular"])
+        self.boundCombo.setToolTip(
+            "Boundary condition for image interpolation and preprocessing.")
+        advSubLayout.addRow("Boundary:", self.boundCombo)
+
+        # Stopping criterion
+        self.critCombo = qt.QComboBox()
+        self.critCombo.addItems(["diff", "gain"])
+        self.critCombo.setToolTip(
+            "Stopping criterion: 'diff' = absolute loss change, "
+            "'gain' = relative loss change (more robust).")
+        advSubLayout.addRow("Stop Criterion:", self.critCombo)
+
+        # Verbose level
+        self.verboseCombo = qt.QComboBox()
+        self.verboseCombo.addItems(["0", "1", "2"])
+        self.verboseCombo.setCurrentIndex(1)
+        self.verboseCombo.setToolTip(
+            "Verbosity level: 0 = silent, 1 = per-iteration summary, "
+            "2 = detailed (includes line search steps and model info).")
+        advSubLayout.addRow("Verbose:", self.verboseCombo)
 
         # --- Individual regularization penalties ---
         self.penAbsoluteSpin = qt.QDoubleSpinBox()
@@ -300,7 +367,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.penAbsoluteSpin.setValue(0.0001)
         self.penAbsoluteSpin.setToolTip(
             "Penalty on absolute displacements (0th order).")
-        advancedLayout.addRow("Lambda Absolute:", self.penAbsoluteSpin)
+        advSubLayout.addRow("Lambda Absolute:", self.penAbsoluteSpin)
 
         self.penMembraneSpin = qt.QDoubleSpinBox()
         self.penMembraneSpin.setDecimals(4)
@@ -309,7 +376,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.penMembraneSpin.setValue(0.0010)
         self.penMembraneSpin.setToolTip(
             "Penalty on membrane energy (1st order).")
-        advancedLayout.addRow("Lambda Membrane:", self.penMembraneSpin)
+        advSubLayout.addRow("Lambda Membrane:", self.penMembraneSpin)
 
         self.penBendingSpin = qt.QDoubleSpinBox()
         self.penBendingSpin.setDecimals(4)
@@ -318,36 +385,16 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.penBendingSpin.setValue(0.2000)
         self.penBendingSpin.setToolTip(
             "Penalty on bending energy (2nd order).")
-        advancedLayout.addRow("Lambda Bending:", self.penBendingSpin)
+        advSubLayout.addRow("Lambda Bending:", self.penBendingSpin)
 
         self.penLameEdit = qt.QLineEdit("0.05, 0.2")
         self.penLameEdit.setToolTip(
             "Lame constants for linear elastic energy (two comma-separated values).")
-        advancedLayout.addRow("Lambda Lame:", self.penLameEdit)
-
-        self.nlMaxIterSpin = qt.QSpinBox()
-        self.nlMaxIterSpin.setRange(1, 1000)
-        self.nlMaxIterSpin.setValue(64)
-        self.nlMaxIterSpin.setToolTip("Max iterations for nonlinear optimizer (per pyramid level).")
-        advancedLayout.addRow("Nonlin Max Iter:", self.nlMaxIterSpin)
-
-        self.nlTolSpin = qt.QDoubleSpinBox()
-        self.nlTolSpin.setDecimals(4)
-        self.nlTolSpin.setRange(0.0001, 1.0)
-        self.nlTolSpin.setSingleStep(0.001)
-        self.nlTolSpin.setValue(0.0010)
-        self.nlTolSpin.setToolTip("Convergence tolerance for nonlinear optimizer.")
-        advancedLayout.addRow("Nonlin Tolerance:", self.nlTolSpin)
-
-        self.pyramidLevelsEdit = qt.QLineEdit("0, 1, 2")
-        self.pyramidLevelsEdit.setToolTip(
-            "Comma-separated pyramid levels (0=finest). "
-            "More levels = coarser initial alignment.")
-        advancedLayout.addRow("Pyramid Levels:", self.pyramidLevelsEdit)
+        advSubLayout.addRow("Lambda Lame:", self.penLameEdit)
 
         resetDefaultsButton = qt.QPushButton("Reset to Defaults")
         resetDefaultsButton.clicked.connect(self._resetParameterDefaults)
-        advancedLayout.addRow(resetDefaultsButton)
+        advSubLayout.addRow(resetDefaultsButton)
 
         # --- Log section (collapsible, expanded) ---
         logCollapsible = slicer.qMRMLCollapsibleButton()
@@ -407,7 +454,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.vizContourDensitySlider.enabled = False
         self.vizContourDensitySlider.minimum = 1
         self.vizContourDensitySlider.maximum = 100
-        self.vizContourDensitySlider.value = 12
+        self.vizContourDensitySlider.value = 25
         self.vizContourDensitySlider.setToolTip(
             "Contour density: lower = fewer/cleaner, higher = more/finer.")
         vizLayout.addRow("Contour Density:", self.vizContourDensitySlider)
@@ -548,6 +595,19 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # UI helpers
     # -----------------------------------------------------------------
 
+    def _onAffineOnlyToggled(self, checked):
+        """Enable/disable nonlinear-specific parameters."""
+        enabled = not checked
+        self.outerMaxIterSpin.enabled = enabled
+        self.outerTolSpin.enabled = enabled
+        self.regLambdaSpin.enabled = enabled
+        self.penAbsoluteSpin.enabled = enabled
+        self.penMembraneSpin.enabled = enabled
+        self.penBendingSpin.enabled = enabled
+        self.penLameEdit.enabled = enabled
+        self.nlMaxIterSpin.enabled = enabled
+        self.nlTolSpin.enabled = enabled
+
     def _onCategoricalToggled(self, checked):
         self.lossCombo.clear()
         items = self._categoricalLosses if checked else self._intensityLosses
@@ -564,12 +624,12 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.vizContourDensitySlider.enabled = hasBoth and self.vizContoursCheck.checked
 
     def _resetParameterDefaults(self):
-        self.affineBasisCombo.setCurrentIndex(0)  # similitude
-        self.affMaxIterSpin.setValue(128)
-        self.affTolSpin.setValue(0.0001)
+        self.affineBasisCombo.setCurrentIndex(0)  # rigid
+        self.affMaxIterSpin.setValue(256)
+        self.affTolSpin.setValue(0.000001)
         self.outerMaxIterSpin.setValue(64)
         self.outerTolSpin.setValue(0.0010)
-        self.regLambdaSpin.setValue(5.0)
+        self.regLambdaSpin.setValue(10.0)
         self.penAbsoluteSpin.setValue(0.0001)
         self.penMembraneSpin.setValue(0.0010)
         self.penBendingSpin.setValue(0.2000)
@@ -577,6 +637,34 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.nlMaxIterSpin.setValue(64)
         self.nlTolSpin.setValue(0.0010)
         self.pyramidLevelsEdit.setText("0, 1, 2")
+        self.boundCombo.setCurrentIndex(0)  # zero
+        self.critCombo.setCurrentIndex(0)  # diff
+        self.verboseCombo.setCurrentIndex(1)  # 1
+
+    def _onClearTransforms(self):
+        """Remove all NITorch-created transforms from the scene."""
+        # Detach transform from moving volume first
+        movingNode = self.movingSelector.currentNode()
+        if movingNode is not None:
+            movingNode.SetAndObserveTransformNodeID(None)
+
+        # Remove all grid transform nodes named NITorch_*
+        nodesToRemove = []
+        for nodeType in ["vtkMRMLGridTransformNode", "vtkMRMLLinearTransformNode"]:
+            nodes = slicer.mrmlScene.GetNodesByClass(nodeType)
+            nodes.UnRegister(None)
+            for i in range(nodes.GetNumberOfItems()):
+                node = nodes.GetItemAsObject(i)
+                if node.GetName().startswith("NITorch_"):
+                    nodesToRemove.append(node)
+        for node in nodesToRemove:
+            slicer.mrmlScene.RemoveNode(node)
+
+        # Reset counter
+        NITorchRegisterWidget._regCounter = 0
+
+        # Update views
+        slicer.app.processEvents()
 
     def _applyCurrentTransform(self):
         """Apply or remove the selected transform based on checkbox state."""
@@ -688,11 +776,11 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.vtkMRMLCrosshairNode.ShowBasic)
 
     def _createContourNode(self, movingNode):
-        """Create a label map of iso-contours from the moving volume."""
+        """Create a label map of edge contours from the moving volume."""
         import numpy as np
-        from scipy.ndimage import binary_erosion
+        from scipy.ndimage import gaussian_filter, sobel
 
-        data = slicer.util.arrayFromVolume(movingNode).astype(np.float64)
+        data = slicer.util.arrayFromVolume(movingNode).astype(np.float32)
 
         # Normalize intensity to [0, 1] using robust percentiles
         nonzero = data[data > 0]
@@ -703,19 +791,19 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return None
         normalized = np.clip((data - dmin) / (dmax - dmin), 0, 1)
 
-        # Number of iso-levels from density slider (1->2, 100->8)
+        # Smooth then compute gradient magnitude via Sobel
+        smoothed = gaussian_filter(normalized, sigma=0.5)
+        grad_mag = np.zeros_like(smoothed)
+        for axis in range(3):
+            grad_mag += sobel(smoothed, axis=axis) ** 2
+        grad_mag = np.sqrt(grad_mag)
+
+        # Density slider controls threshold: low density = only strongest edges
         density = self.vizContourDensitySlider.value
-        n_levels = int(2 + (density - 1) * 6 / 99)
-        levels = np.linspace(0.15, 0.85, n_levels)
-
-        # Build iso-contours: boundary of thresholded regions at each level
-        edges = np.zeros(data.shape, dtype=bool)
-        for level in levels:
-            mask = normalized > level
-            eroded = binary_erosion(mask)
-            edges |= (mask ^ eroded)
-
-        edges = edges.astype(np.int16)
+        # Map density 1..100 to percentile 99..70
+        pct = 99 - (density - 1) * 29 / 99
+        threshold = np.percentile(grad_mag[grad_mag > 0], pct) if np.any(grad_mag > 0) else 0
+        edges = (grad_mag > threshold).astype(np.int16)
 
         # Create label map node
         contourNode = slicer.mrmlScene.AddNewNodeByClass(
@@ -742,6 +830,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         colorNode.SetColor(0, "Background", 0.0, 0.0, 0.0, 0.0)
         colorNode.SetColor(1, "Contour", 1.0, 0.0, 0.0, 1.0)
         contourNode.GetDisplayNode().SetAndObserveColorNodeID(colorNode.GetID())
+        contourNode.GetDisplayNode().SetOpacity(0.5)
         self._contourColorNode = colorNode
 
         # Apply the same transform as the moving volume
@@ -1063,6 +1152,10 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "nl_tolerance": self.nlTolSpin.value,
             "outer_max_iter": int(self.outerMaxIterSpin.value),
             "outer_tolerance": self.outerTolSpin.value,
+            "bound": str(self.boundCombo.currentText),
+            "crit": str(self.critCombo.currentText),
+            "verbose": int(self.verboseCombo.currentText),
+            "affine_only": bool(self.affineOnlyCheck.checked),
             "apply_transform": bool(self.applyTransformCheck.checked),
         }
 
@@ -1160,6 +1253,7 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
 
             # Run registration
             print(f"Starting registration (device={device}, loss={loss_name})...\n")
+            affine_only = params.get("affine_only", False)
             affine_sqrt, displacement, disp_affine = register(
                 fixed_dat, fixed_affine, moving_dat, moving_affine,
                 loss_name,
@@ -1177,8 +1271,11 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
                 outer_max_iter=params["outer_max_iter"],
                 outer_tolerance=params["outer_tolerance"],
                 pyramid_levels=params.get("pyramid_levels"),
+                bound=params.get("bound", "dct2"),
+                crit=params.get("crit", "diff"),
+                affine_only=affine_only,
                 device=device,
-                verbose=True,
+                verbose=params.get("verbose", 1),
             )
 
             # Compose deformation grid
@@ -1198,8 +1295,10 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
 
             transformNode = self._createGridTransformNode(
                 disp_np, fixed_affine_np, fixed_shape)
+
+            mode_str = "affine" if affine_only else params['loss_name']
             transformNode.SetName(
-                f"NITorch_{counter:03d}_{params['loss_name']}_"
+                f"NITorch_{counter:03d}_{mode_str}_"
                 f"{fixedNode.GetName()}_to_{movingNode.GetName()}")
 
             elapsed = time.time() - t_start
@@ -1230,7 +1329,7 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
     def _createGridTransformNode(disp_np, affine_np, fixed_shape):
         """Create a grid transform node from a displacement array.
 
-        Writes a transient temp NIfTI (the only disk I/O in the pipeline),
+        Writes a transient temp NIfTI (using struct, no nibabel dependency),
         loads it via slicer.util.loadTransform which handles all coordinate
         conventions correctly, then deletes the file immediately.
 
@@ -1247,15 +1346,53 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         -------
         transformNode : vtkMRMLGridTransformNode
         """
+        import struct
         import tempfile
-        import nibabel as nib
+        import numpy as np
 
+        # Build a minimal NIfTI-1 header (348 bytes)
+        header = bytearray(348)
+        shape = disp_np.shape  # (X, Y, Z, 1, 3)
+        ndim = len(shape)
+
+        # sizeof_hdr
+        struct.pack_into('<i', header, 0, 348)
+        # dim: [ndim, d1, d2, ..., d7]  (8 shorts starting at offset 40)
+        dims = [ndim] + list(shape) + [1] * (7 - ndim)
+        struct.pack_into('<' + 'h' * 8, header, 40, *dims)
+        # datatype = 16 (FLOAT32), bitpix = 32
+        struct.pack_into('<h', header, 70, 16)
+        struct.pack_into('<h', header, 72, 32)
+        # pixdim: extract voxel spacing from affine to match sform
+        spacing = np.sqrt((affine_np[:3, :3] ** 2).sum(axis=0))
+        pixdim = [1.0, float(spacing[0]), float(spacing[1]), float(spacing[2]),
+                  1.0, 1.0, 1.0, 1.0]
+        struct.pack_into('<' + 'f' * 8, header, 76, *pixdim)
+        # vox_offset = 352 (header 348 + 4-byte extension pad)
+        struct.pack_into('<f', header, 108, 352.0)
+        # sform_code = 1 (scanner anat)
+        struct.pack_into('<h', header, 254, 1)
+        # srow_x, srow_y, srow_z (affine rows, 4 floats each)
+        for i in range(3):
+            struct.pack_into('<4f', header, 280 + i * 16,
+                             *affine_np[i, :].astype(np.float32).tolist())
+        # intent_code = 1006 (NIFTI_INTENT_DISPVECT)
+        struct.pack_into('<h', header, 68, 1006)
+        # magic = "n+1\0"
+        header[344:348] = b'n+1\x00'
+
+        # 4-byte extension block (no extensions)
+        ext = b'\x00\x00\x00\x00'
+
+        # Write to temp file and load via Slicer
         tmpdir = tempfile.mkdtemp(prefix="nitorch_grid_")
-        grid_path = os.path.join(tmpdir, "Grid.nii.gz")
+        grid_path = os.path.join(tmpdir, "Grid.nii")
         try:
-            grid_nii = nib.Nifti1Image(disp_np, affine_np)
-            grid_nii.header['intent_code'] = 1006  # NIFTI_INTENT_DISPVECT
-            nib.save(grid_nii, grid_path)
+            data = disp_np.astype(np.float32).tobytes(order='F')
+            with open(grid_path, 'wb') as f:
+                f.write(bytes(header))
+                f.write(ext)
+                f.write(data)
             transformNode = slicer.util.loadTransform(grid_path)
         finally:
             import shutil
