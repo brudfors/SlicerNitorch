@@ -11,6 +11,11 @@ GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](ht
 
 ## Installation
 
+> Distribution via the Slicer Extensions Manager is planned (the repository
+> includes `CMakeLists.txt` and `SlicerNitorch.s4ext` for submission to the
+> [Extensions Index](https://github.com/Slicer/ExtensionsIndex)). Until then,
+> install manually with the steps below.
+
 ### 1. Install Python dependencies in Slicer
 
 Open 3D Slicer's Python console (`View > Python Console`) and run:
@@ -58,6 +63,11 @@ The module has two tabs: **Registration** and **Validation**.
 7. Click **Run Registration**
 
 The module will run affine + nonlinear (SVF) registration and create a grid transform node. If **Apply output transform to moving** is checked, the transform is automatically applied to the moving volume.
+
+> **Note:** registration currently runs on Slicer's main thread, so the user
+> interface is unresponsive while a run is in progress. Progress is printed to
+> the **Log** section; wait for "Registration complete" before interacting with
+> Slicer again.
 
 ### Output Transform
 
@@ -118,4 +128,15 @@ Two known causes:
 **(a) Stale `torch_interpol`.** Versions before 0.3.0 use a raw `@torch.jit.script` decorator that collides with itself under recent PyTorch as torch.jit's compilation unit accumulates type registrations. Fix: upgrade in Slicer's Python — `pip_install("torch_interpol>=0.3.0")` — and fully restart Slicer.
 
 **(b) Editable nitorch install shadowed by a sibling source dir.** If nitorch was installed with `pip install -e /path/to/nitorch-source` *and* the SlicerNitorch module's parent directory contains a `nitorch/` source repo as a sibling, Slicer (which auto-adds the parent of "Additional module paths" to `sys.path`) causes Python's `PathFinder` to treat the sibling `nitorch/` as a namespace package, shadowing the editable install. The symptom is misleading: `import nitorch` appears to succeed but produces an empty namespace package, and any later `from nitorch import compiled_backend` fails as above. Fix: reinstall nitorch non-editable (see step 1 above), then fully restart Slicer.
+
+## Development
+
+### Running the self-tests
+
+The module ships a self-test class (`NITorchRegisterTest`). To run it in Slicer:
+open the **Reload and Test** panel (Developer Tools) and click **Reload and
+Test**, or go to **Modules > Testing > Self Tests**, select **NITorchRegister**,
+and run. The Dice and grid-transform tests need only numpy/VTK; the
+end-to-end registration smoke test runs if nitorch is installed and is skipped
+cleanly otherwise.
 
