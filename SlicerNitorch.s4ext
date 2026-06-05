@@ -1,0 +1,34 @@
+# Extension description file for the 3D Slicer Extensions Index.
+# See https://github.com/Slicer/ExtensionsIndex for the format.
+
+# Source code repository
+scm git
+scmurl https://github.com/brudfors/SlicerNitorch
+scmrevision main
+
+# Other extensions this one depends on (NA = none)
+depends NA
+
+# Inner directory to build (repository root)
+build_subdirectory .
+
+# Project metadata
+homepage https://github.com/brudfors/SlicerNitorch
+contributors Mikael Brudfors
+
+# One of: Registration, Segmentation, Quantification, ...
+category Registration
+
+# URL of an icon (png, 128x128 recommended)
+iconurl https://raw.githubusercontent.com/brudfors/SlicerNitorch/main/Resources/Icons/NITorchRegister.png
+
+# Development status (leave empty for stable)
+status
+
+# Short description
+description GPU-accelerated affine + nonlinear (SVF) 3D image registration powered by the NITorch library, with a Dice validation tab.
+
+# URLs of screenshots, space-separated
+screenshoturls https://raw.githubusercontent.com/brudfors/SlicerNitorch/main/SlicerNitorch.png
+
+enabled 1
