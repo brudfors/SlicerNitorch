@@ -1330,16 +1330,22 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         """Create a grid transform node from a displacement array.
 
         Builds the vtkOrientedGridTransform entirely in memory using VTK,
-        avoiding any nibabel dependency or disk I/O. The full IJK→RAS
-        affine (including shear, if any) is encoded in the grid direction
-        matrix with unit voxel spacing.
+        avoiding any nibabel dependency or disk I/O.
+
+        Slicer stores transforms in RAS (NIfTI is also RAS), so the
+        displacement vectors, grid origin, and direction matrix are all
+        used directly without any RAS↔LPS conversion. The IJK→RAS affine
+        is decomposed into column-norm spacing and a normalized (orthonormal)
+        direction matrix — the same convention Slicer's NIfTI loader produces,
+        and required because vtkOrientedGridTransform uses the transpose as
+        its inverse during world→voxel lookup.
 
         Parameters
         ----------
         disp_np : np.ndarray
             (X, Y, Z, 1, 3) displacement field in RAS.
         affine_np : np.ndarray
-            (4, 4) IJK-to-RAS affine of the fixed image.
+            (4, 4) IJK-to-RAS affine of the fixed image (assumed no shear).
         fixed_shape : tuple
             (X, Y, Z) shape.
 
@@ -1351,33 +1357,26 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         import numpy as np
         from vtk.util.numpy_support import numpy_to_vtk
 
-        # Squeeze (X, Y, Z, 1, 3) -> (X, Y, Z, 3)
+        # Squeeze (X, Y, Z, 1, 3) -> (X, Y, Z, 3). RAS throughout (no LPS flip).
         disp = disp_np.squeeze()
 
-        # Slicer grid transforms expect LPS displacements — flip x and y
-        disp_lps = disp.copy()
-        disp_lps[..., 0] *= -1
-        disp_lps[..., 1] *= -1
+        # Decompose affine: spacing = column norms, direction = normalized
+        spacing = np.sqrt((affine_np[:3, :3] ** 2).sum(axis=0))
+        direction = affine_np[:3, :3] / spacing[np.newaxis, :]
 
-        # vtkImageData with unit voxel spacing — the full affine goes in the
-        # direction matrix, so shear (if any) is preserved.
         grid_image = vtk.vtkImageData()
         grid_image.SetDimensions(fixed_shape[0], fixed_shape[1], fixed_shape[2])
-        grid_image.SetSpacing(1.0, 1.0, 1.0)
+        grid_image.SetSpacing(
+            float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
         origin_ras = affine_np[:3, 3]
         grid_image.SetOrigin(
-            float(-origin_ras[0]), float(-origin_ras[1]), float(origin_ras[2]))
-
-        # Direction = full 3x3 linear part with rows 0,1 negated (RAS -> LPS)
-        direction_lps = affine_np[:3, :3].copy()
-        direction_lps[0, :] *= -1
-        direction_lps[1, :] *= -1
+            float(origin_ras[0]), float(origin_ras[1]), float(origin_ras[2]))
 
         # Flatten to (N, 3), C-contiguous, with X-axis varying fastest to
         # match vtkImageData's point-data ordering.
         flat = np.ascontiguousarray(
-            disp_lps.reshape(-1, 3, order='F'), dtype=np.float64)
+            disp.reshape(-1, 3, order='F'), dtype=np.float64)
         vtk_arr = numpy_to_vtk(flat, deep=True)
         vtk_arr.SetName("displacement")
         # vtkGridTransform reads the displacement via GetScalars() first
@@ -1389,7 +1388,7 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         dir_matrix = vtk.vtkMatrix4x4()
         for i in range(3):
             for j in range(3):
-                dir_matrix.SetElement(i, j, float(direction_lps[i, j]))
+                dir_matrix.SetElement(i, j, float(direction[i, j]))
         grid_transform.SetGridDirectionMatrix(dir_matrix)
 
         transformNode = slicer.mrmlScene.AddNewNodeByClass(
