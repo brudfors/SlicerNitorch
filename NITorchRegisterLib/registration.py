@@ -149,7 +149,9 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
             verbose=verbose_level, framerate=0,
         )
 
-        affine_sqrt = affine_model.exp(cache_result=True, recompute=True)
+        # Extracting outputs — no autograd graph needed.
+        with torch.no_grad():
+            affine_sqrt = affine_model.exp(cache_result=True, recompute=True)
         return affine_sqrt, None, None
 
     # Nonlinear model (SVF)
@@ -180,14 +182,16 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
         verbose=verbose_level, framerate=0,
     )
 
-    # Extract affine square root
-    affine_sqrt = affine_model.exp(cache_result=True, recompute=True)
+    # Extracting outputs — no autograd graph needed.
+    with torch.no_grad():
+        # Extract affine square root
+        affine_sqrt = affine_model.exp(cache_result=True, recompute=True)
 
-    # Extract and exponentiate SVF
-    svf_dat = nonlin_model.dat.dat
-    if svf_dat.dim() == 4:
-        svf_dat = svf_dat.unsqueeze(0)
-    displacement = spatial.exp(svf_dat, displacement=True).squeeze(0)
-    disp_affine = nonlin_model.affine
+        # Extract and exponentiate SVF
+        svf_dat = nonlin_model.dat.dat
+        if svf_dat.dim() == 4:
+            svf_dat = svf_dat.unsqueeze(0)
+        displacement = spatial.exp(svf_dat, displacement=True).squeeze(0)
+        disp_affine = nonlin_model.affine
 
     return affine_sqrt, displacement, disp_affine

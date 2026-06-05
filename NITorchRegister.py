@@ -15,6 +15,7 @@ from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModule,
     ScriptedLoadableModuleWidget,
     ScriptedLoadableModuleLogic,
+    ScriptedLoadableModuleTest,
 )
 from slicer.util import VTKObservationMixin
 import qt
@@ -28,11 +29,18 @@ class NITorchRegister(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "NITorch Register"
         self.parent.categories = ["Registration"]
+        # nitorch / torch_interpol are pip dependencies installed into Slicer's
+        # Python, not Slicer extension modules, so this stays empty.
         self.parent.dependencies = []
-        self.parent.contributors = ["NITorch developers"]
+        self.parent.contributors = ["Mikael Brudfors"]
         self.parent.helpText = (
-            "GPU-accelerated affine + nonlinear 3D image registration powered by NITorch "
-            "(https://github.com/balbasty/nitorch)."
+            "NITorch Register performs GPU-accelerated affine + nonlinear (SVF) 3D "
+            "image registration, powered by the NITorch library "
+            "(https://github.com/balbasty/nitorch). The <b>Registration</b> tab aligns "
+            "a moving volume to a fixed volume and outputs a grid transform; the "
+            "<b>Validation</b> tab computes per-label and mean Dice scores before and "
+            "after registration. See the project README for nitorch installation notes "
+            "(it must be installed non-editable into Slicer's Python)."
         )
         self.parent.acknowledgementText = (
             "This module uses the NITorch library for medical image registration."
@@ -698,9 +706,20 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Visualization
     # -----------------------------------------------------------------
 
+    @staticmethod
+    def _getCrosshairNode():
+        """Return the scene's crosshair node, or None if absent.
+
+        Safer than slicer.util.getNode("Crosshair"), which raises when no node
+        with that name exists.
+        """
+        return slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLCrosshairNode")
+
     def _saveSliceViewState(self):
         """Save the current slice view state (volumes, opacity, compositing)."""
         layoutManager = slicer.app.layoutManager()
+        if layoutManager is None:
+            return None
         state = {"layout": layoutManager.layout, "views": {}}
         for name in layoutManager.sliceViewNames():
             sliceWidget = layoutManager.sliceWidget(name)
@@ -716,8 +735,9 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 "linked": compositeNode.GetLinkedControl(),
             }
         # Save crosshair state
-        crosshairNode = slicer.util.getNode("Crosshair")
-        state["crosshairMode"] = crosshairNode.GetCrosshairMode()
+        crosshairNode = self._getCrosshairNode()
+        if crosshairNode is not None:
+            state["crosshairMode"] = crosshairNode.GetCrosshairMode()
         return state
 
     def _restoreSliceViewState(self, state):
@@ -725,6 +745,8 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if state is None:
             return
         layoutManager = slicer.app.layoutManager()
+        if layoutManager is None:
+            return
         layoutManager.setLayout(state["layout"])
         slicer.app.processEvents()
         for name in layoutManager.sliceViewNames():
@@ -742,8 +764,9 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             sliceNode.SetUseLabelOutline(info["labelOutline"])
             compositeNode.SetLinkedControl(info["linked"])
         # Restore crosshair state
-        crosshairNode = slicer.util.getNode("Crosshair")
-        crosshairNode.SetCrosshairMode(state.get("crosshairMode", 0))
+        crosshairNode = self._getCrosshairNode()
+        if crosshairNode is not None:
+            crosshairNode.SetCrosshairMode(state.get("crosshairMode", 0))
 
     def _applyVizMode(self, fit=False):
         """Apply fade visualization to slice views."""
@@ -757,6 +780,8 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         movingID = movingNode.GetID()
 
         layoutManager = slicer.app.layoutManager()
+        if layoutManager is None:
+            return
         for name in layoutManager.sliceViewNames():
             compositeNode = layoutManager.sliceWidget(
                 name).sliceLogic().GetSliceCompositeNode()
@@ -771,9 +796,10 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 layoutManager.sliceWidget(name).sliceLogic().FitSliceToAll()
 
         # Enable crosshair
-        crosshairNode = slicer.util.getNode("Crosshair")
-        crosshairNode.SetCrosshairMode(
-            slicer.vtkMRMLCrosshairNode.ShowBasic)
+        crosshairNode = self._getCrosshairNode()
+        if crosshairNode is not None:
+            crosshairNode.SetCrosshairMode(
+                slicer.vtkMRMLCrosshairNode.ShowBasic)
 
     def _createContourNode(self, movingNode):
         """Create a label map of edge contours from the moving volume."""
@@ -861,6 +887,8 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Set as label layer with outline display
         slicer.util.setSliceViewerLayers(label=self._contourNode)
         layoutManager = slicer.app.layoutManager()
+        if layoutManager is None:
+            return
         for name in layoutManager.sliceViewNames():
             sliceNode = layoutManager.sliceWidget(
                 name).sliceLogic().GetSliceNode()
@@ -1102,7 +1130,13 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Validate 3D inputs
         for name, node in [("Fixed", fixedNode), ("Moving", movingNode)]:
-            dims = [node.GetImageData().GetDimensions()[i] for i in range(3)]
+            imageData = node.GetImageData()
+            if imageData is None:
+                slicer.util.errorDisplay(
+                    f"{name} volume has no image data. Please select a "
+                    "volume with voxel data.")
+                return
+            dims = [imageData.GetDimensions()[i] for i in range(3)]
             if any(d <= 1 for d in dims):
                 slicer.util.errorDisplay(
                     f"{name} volume is not 3D (dimensions: {dims[0]}x{dims[1]}x{dims[2]}). "
@@ -1224,6 +1258,16 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         loss_name = params["loss_name"]
         device = params["device"]
         is_label = params["is_label"]
+
+        # Fall back to CPU if a CUDA device was requested but is unavailable.
+        # Done here (not inside register()) because `device` also flows to the
+        # grid-composition calls below; a fallback buried in register() would
+        # leave them with a stale "cuda:N" and cause a device mismatch.
+        if str(device).startswith("cuda") and not torch.cuda.is_available():
+            logging.warning(
+                "CUDA requested (%s) but unavailable; falling back to CPU.",
+                device)
+            device = "cpu"
 
         t_start = time.time()
         transformNode = None
@@ -1397,3 +1441,141 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         transformNode.CreateDefaultDisplayNodes()
 
         return transformNode
+
+
+# ---------------------------------------------------------------------------
+# Self-test
+# ---------------------------------------------------------------------------
+
+class NITorchRegisterTest(ScriptedLoadableModuleTest):
+    """Self-tests runnable from Slicer's "Reload and Test" panel.
+
+    The Dice and grid-transform tests are nitorch-free and always run. The
+    registration smoke test requires nitorch and is skipped cleanly otherwise.
+    """
+
+    def setUp(self):
+        slicer.mrmlScene.Clear()
+
+    def runTest(self):
+        self.setUp()
+        self.test_DiceScores()
+        self.setUp()
+        self.test_GridTransformNode()
+        self.setUp()
+        self.test_RegistrationSmoke()
+
+    def test_DiceScores(self):
+        """compute_dice_scores returns exact values for known overlaps."""
+        self.delayDisplay("Starting test_DiceScores")
+        import numpy as np
+        from NITorchRegisterLib.validation import compute_dice_scores
+
+        # Identical label maps -> Dice 1.0 for every label.
+        a = np.zeros((4, 4, 4), dtype=np.int16)
+        a[:2] = 1
+        scores, mean = compute_dice_scores(a, a.copy())
+        self.assertAlmostEqual(scores[1], 1.0)
+        self.assertAlmostEqual(mean, 1.0)
+
+        # Disjoint label-1 regions -> Dice 0.0.
+        b1 = np.zeros((4, 4, 4), dtype=np.int16)
+        b1[:2] = 1
+        b2 = np.zeros((4, 4, 4), dtype=np.int16)
+        b2[2:] = 1
+        scores, mean = compute_dice_scores(b1, b2)
+        self.assertAlmostEqual(scores[1], 0.0)
+        self.assertAlmostEqual(mean, 0.0)
+
+        # Half-overlapping regions -> Dice 0.5.
+        # b1 occupies rows 0-1 (32 voxels), c2 occupies rows 1-2 (32 voxels),
+        # overlap is row 1 (16 voxels): 2*16 / (32+32) = 0.5.
+        c2 = np.zeros((4, 4, 4), dtype=np.int16)
+        c2[1:3] = 1
+        scores, mean = compute_dice_scores(b1, c2)
+        self.assertAlmostEqual(scores[1], 0.5)
+        self.assertAlmostEqual(mean, 0.5)
+
+        self.delayDisplay("test_DiceScores passed")
+
+    def test_GridTransformNode(self):
+        """_createGridTransformNode builds a grid transform of the right shape."""
+        self.delayDisplay("Starting test_GridTransformNode")
+        import numpy as np
+
+        shape = (4, 5, 6)
+        disp_np = np.zeros((*shape, 1, 3), dtype=np.float32)
+        disp_np[..., 0] = 2.0  # uniform 2mm shift along R
+        affine_np = np.diag([1.5, 1.5, 2.0, 1.0]).astype(np.float64)
+        affine_np[:3, 3] = [10.0, -20.0, 5.0]
+
+        node = NITorchRegisterLogic._createGridTransformNode(
+            disp_np, affine_np, shape)
+
+        self.assertIsNotNone(node)
+        self.assertTrue(node.IsA("vtkMRMLGridTransformNode"))
+        gridTransform = node.GetTransformFromParent()
+        self.assertIsNotNone(gridTransform)
+        grid = gridTransform.GetDisplacementGrid()
+        self.assertIsNotNone(grid)
+        self.assertEqual(tuple(grid.GetDimensions()), shape)
+
+        self.delayDisplay("test_GridTransformNode passed")
+
+    def test_RegistrationSmoke(self):
+        """End-to-end affine-only registration on tiny synthetic volumes (CPU)."""
+        self.delayDisplay("Starting test_RegistrationSmoke")
+        try:
+            import nitorch  # noqa: F401
+        except ImportError:
+            self.delayDisplay("nitorch not installed — skipping smoke test")
+            return
+
+        import numpy as np
+
+        def _makeVolume(name, cube_origin):
+            arr = np.zeros((16, 16, 16), dtype=np.float32)
+            ox, oy, oz = cube_origin
+            arr[ox:ox + 6, oy:oy + 6, oz:oz + 6] = 100.0
+            node = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLScalarVolumeNode", name)
+            slicer.util.updateVolumeFromArray(node, arr)
+            return node
+
+        fixedNode = _makeVolume("smokeFixed", (5, 5, 5))
+        movingNode = _makeVolume("smokeMoving", (7, 6, 5))
+
+        params = {
+            "loss_name": "mse",
+            "device": "cpu",
+            "is_label": False,
+            "affine_basis": "translation",
+            "pyramid_levels": [0],
+            "reg_lambda": 5,
+            "penalty_absolute": 0.0001,
+            "penalty_membrane": 0.001,
+            "penalty_bending": 0.2,
+            "penalty_lame": (0.05, 0.2),
+            "aff_max_iter": 5,
+            "aff_tolerance": 1e-4,
+            "nl_max_iter": 2,
+            "nl_tolerance": 1e-3,
+            "outer_max_iter": 1,
+            "outer_tolerance": 1e-3,
+            "bound": "zero",
+            "crit": "diff",
+            "verbose": 0,
+            "affine_only": True,
+            "apply_transform": False,
+        }
+
+        logic = NITorchRegisterLogic()
+        logWidget = qt.QPlainTextEdit()
+        elapsed, transformNode = logic.runRegistration(
+            fixedNode, movingNode, params, logWidget, counter=1)
+
+        self.assertIsNotNone(transformNode)
+        self.assertTrue(transformNode.IsA("vtkMRMLGridTransformNode"))
+        self.assertGreater(elapsed, 0.0)
+
+        self.delayDisplay("test_RegistrationSmoke passed")

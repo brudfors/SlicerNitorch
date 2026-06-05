@@ -29,11 +29,10 @@ def compute_dice_scores(label1, label2, exclude_zero=True):
         mask1 = label1 == lab
         mask2 = label2 == lab
         intersection = np.sum(mask1 & mask2)
+        # total is always >= 1: every label here comes from the union of values
+        # present in label1/label2, so it occurs in at least one array.
         total = np.sum(mask1) + np.sum(mask2)
-        if total == 0:
-            dice_scores[int(lab)] = 1.0
-        else:
-            dice_scores[int(lab)] = 2.0 * intersection / total
+        dice_scores[int(lab)] = 2.0 * intersection / total
 
     mean_dice = float(np.mean(list(dice_scores.values()))) if dice_scores else 0.0
     return dice_scores, mean_dice
