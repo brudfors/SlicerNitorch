@@ -9,36 +9,27 @@ GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](ht
 - 3D Slicer >= 5.x
 - NVIDIA GPU (optional but recommended for faster registration)
 
-## Installation
+### 1. Install the SlicerPyTorch extension
 
-> Distribution via the Slicer Extensions Manager is planned (the repository
-> includes `CMakeLists.txt` and `SlicerNitorch.s4ext` for submission to the
-> [Extensions Index](https://github.com/Slicer/ExtensionsIndex)). Until then,
-> install manually with the steps below.
+`torch_interpol` and `nitorch` require PyTorch, which Slicer does not bundle and which is managed by the **SlicerPyTorch** extension. Open the **Extensions Manager**, search for **PyTorch**, click **Install**, and restart Slicer when prompted.
 
-### 1. Install Python dependencies in Slicer
+### 2. Install nitorch (recommended: the installer script)
 
-Open 3D Slicer's Python console (`View > Python Console`) and run:
+Clone or download this repository, then in the Python console (`View > Python Console`) run:
 
 ```python
-pip_install("torch_interpol>=0.3.0")
-pip_install("git+https://github.com/balbasty/nitorch.git@master")
+import sys; sys.path.insert(0, "/path/to/SlicerNitorch/Scripts")
+import install_nitorch
+install_nitorch.run()
 ```
 
-> **Important:** install nitorch as a regular (non-editable) package. Using `pip install -e ./nitorch` can silently shadow the install when the SlicerNitorch module sits next to a `nitorch/` source repo (see [Troubleshooting](#troubleshooting)).
+**To get the compiled backend, two things must already be installed on the system:** an NVIDIA **CUDA toolkit** (provides `nvcc`, found under `/usr/local/cuda-*`) and a **C++ compiler** (on Ubuntu: `sudo apt install build-essential`). With those present, `install_nitorch.run()` does everything else automatically; without them it installs the TS backend.
 
-#### Optional
+> ⏱️ **The compiled build is slow** — it compiles many CPU + CUDA kernels, so **20–30 minutes is not unusual**.
 
-For increased acceleration on the GPU, nitorch needs its C++/CUDA extensions compiled against Slicer's bundled PyTorch. From a shell on the same machine, with Slicer closed and a matching GCC + the CUDA toolkit on PATH:
+If a CUDA toolkit or C++ compiler isn't available, it installs the pure (TorchScript / "TS") backend instead and prints how to enable the compiled one. **Windows and macOS** currently use the TS backend (native compiled builds there are not yet supported). Use `install_nitorch.run(force="pure")` to skip compiling. **Restart Slicer** afterwards so the new nitorch is picked up.
 
-```bash
-cd /path/to/nitorch-source
-NI_COMPILED_BACKEND=C /path/to/Slicer/bin/PythonSlicer -m pip install --no-build-isolation .
-```
-
-Without `NI_COMPILED_BACKEND=C`, nitorch falls back to a pure-PyTorch TorchScript backend (slower but no compilation required).
-
-### 2. Add the module path
+### 3. Add the module path
 
 1. Open 3D Slicer
 2. Go to **Edit > Application Settings > Modules**
@@ -59,12 +50,17 @@ The module has two tabs: **Registration** and **Validation**.
 1. Load fixed and moving volumes/labels into Slicer
 2. Open **NITorch Register** from the Modules menu
 3. Select the fixed and moving volumes/labels
-4. Check **Categorical** if inputs are label maps (restricts loss to Dice)
-5. Choose a loss function (LCC, MSE, NMI, or Dice)
+4. Choose a **Registration Mode** (see below; defaults to Automatic)
+5. In Manual mode: check **Categorical** for label maps and pick a loss function (LCC, MSE, NMI, or Dice)
 6. Select the computation device (CPU or CUDA; defaults to the first CUDA device if available)
 7. Click **Run Registration**
 
-The module will run affine + nonlinear (SVF) registration and create a grid transform node. If **Apply output transform to moving** is checked, the transform is automatically applied to the moving volume.
+The module creates a grid transform node. If **Apply output transform to moving** is checked, the transform is automatically applied to the moving volume.
+
+#### Registration Mode
+
+- **Automatic (NMI affine → LCC)** *(default)* — a two-pass pipeline for intensity images: first a pure-affine pass with the **NMI** loss (robust initial alignment), then a **combined affine + nonlinear (SVF)** pass with the **LCC** loss, warm-started from the NMI affine (which is then free to refine). Both passes use the same coarse-to-fine pyramid. It is intensity-only, so the **Categorical**, **Loss Function**, and **Affine Only** controls are disabled and the **Parameters** section is collapsed in this mode (its values are still used). Automatic mode produces **two** transforms — the intermediate affine (`NITorch_NNN_auto_affine_...`) and the final result (`NITorch_NNN_auto_nonlin_...`) — and selects the final one.
+- **Manual** — a single pass using the **Loss Function**, **Categorical**, **Affine Only**, and **Parameters** you choose. Use this for label maps (Dice) or to run affine-only / a single custom loss.
 
 > **Note:** registration currently runs on Slicer's main thread, so the user
 > interface is unresponsive while a run is in progress. Progress is printed to
@@ -77,7 +73,7 @@ Each registration run creates a new grid transform named, e.g., `NITorch_001_lcc
 
 ### Parameters
 
-The **Parameters** section exposes registration settings. The effective nonlinear regularization for each term is `Lambda Global × Lambda <term>`.
+**Lambda** (the overall nonlinear-regularization strength, default `10.0`) is a top-level control on the Registration tab — always editable, in both Automatic and Manual modes. The **Parameters** section below exposes the remaining settings; the effective nonlinear regularization for each term is `Lambda × Lambda <term>`.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -86,7 +82,6 @@ The **Parameters** section exposes registration settings. The effective nonlinea
 | Affine Tolerance | 0.0001 | Convergence tolerance for affine optimizer |
 | Global Max Iter | 64 | Max iterations for interleaved affine/nonlinear optimization |
 | Global Tolerance | 0.0010 | Convergence tolerance for outer loop |
-| Lambda Global | 5.0 | Global scaling factor multiplied with all individual penalty values |
 | Lambda Absolute | 0.0001 | Penalty on absolute displacements (0th order) |
 | Lambda Membrane | 0.0010 | Penalty on membrane energy (1st order) |
 | Lambda Bending | 0.2000 | Penalty on bending energy (2nd order) |
@@ -120,25 +115,3 @@ The **Validation** tab computes Dice overlap scores between fixed and moving seg
 The **Summary** table shows the mean Dice (Before and After) for each computed result. Use the **Result** selector to view per-label Dice scores for a specific run. The **Mean Dice** label shows the selected result's mean. Green highlighting indicates improvement, red indicates degradation.
 
 Results accumulate across runs — select different transforms and click Compute Dice again to compare multiple registrations. Use **Clear Results** to reset.
-
-## Troubleshooting
-
-### `ImportError: cannot import name 'compiled_backend' from 'nitorch' (unknown location)`
-
-Two known causes:
-
-**(a) Stale `torch_interpol`.** Versions before 0.3.0 use a raw `@torch.jit.script` decorator that collides with itself under recent PyTorch as torch.jit's compilation unit accumulates type registrations. Fix: upgrade in Slicer's Python — `pip_install("torch_interpol>=0.3.0")` — and fully restart Slicer.
-
-**(b) Editable nitorch install shadowed by a sibling source dir.** If nitorch was installed with `pip install -e /path/to/nitorch-source` *and* the SlicerNitorch module's parent directory contains a `nitorch/` source repo as a sibling, Slicer (which auto-adds the parent of "Additional module paths" to `sys.path`) causes Python's `PathFinder` to treat the sibling `nitorch/` as a namespace package, shadowing the editable install. The symptom is misleading: `import nitorch` appears to succeed but produces an empty namespace package, and any later `from nitorch import compiled_backend` fails as above. Fix: reinstall nitorch non-editable (see step 1 above), then fully restart Slicer.
-
-## Development
-
-### Running the self-tests
-
-The module ships a self-test class (`NITorchRegisterTest`). To run it in Slicer:
-open the **Reload and Test** panel (Developer Tools) and click **Reload and
-Test**, or go to **Modules > Testing > Self Tests**, select **NITorchRegister**,
-and run. The Dice and grid-transform tests need only numpy/VTK; the
-end-to-end registration smoke test runs if nitorch is installed and is skipped
-cleanly otherwise.
-
