@@ -1,13 +1,13 @@
-# NITorch Register — 3D Slicer Module
+# NITorch Register: 3D Slicer Module for Image Registration
 
-GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](https://github.com/balbasty/nitorch), directly inside [3D Slicer](https://download.slicer.org/).
+GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](https://github.com/balbasty/nitorch) in [3D Slicer](https://download.slicer.org/).
 
 ![SlicerNitorch](SlicerNitorch.png)
 
 ## Prerequisites
 
 - 3D Slicer >= 5.x
-- NVIDIA GPU (optional but recommended, for (much) faster registration)
+- NVIDIA GPU (optional but recommended for faster registration)
 
 ## Installation
 
@@ -27,7 +27,9 @@ pip_install("git+https://github.com/balbasty/nitorch.git@master")
 
 > **Important:** install nitorch as a regular (non-editable) package. Using `pip install -e ./nitorch` can silently shadow the install when the SlicerNitorch module sits next to a `nitorch/` source repo (see [Troubleshooting](#troubleshooting)).
 
-For GPU acceleration, nitorch needs its C++/CUDA extensions compiled against Slicer's bundled PyTorch. From a shell on the same machine, with Slicer closed and a matching GCC + the CUDA toolkit on PATH:
+#### Optional
+
+For increased acceleration on the GPU, nitorch needs its C++/CUDA extensions compiled against Slicer's bundled PyTorch. From a shell on the same machine, with Slicer closed and a matching GCC + the CUDA toolkit on PATH:
 
 ```bash
 cd /path/to/nitorch-source
@@ -59,7 +61,7 @@ The module has two tabs: **Registration** and **Validation**.
 3. Select the fixed and moving volumes/labels
 4. Check **Categorical** if inputs are label maps (restricts loss to Dice)
 5. Choose a loss function (LCC, MSE, NMI, or Dice)
-6. Select the computation device (CPU or CUDA; defaults to first CUDA device if available)
+6. Select the computation device (CPU or CUDA; defaults to the first CUDA device if available)
 7. Click **Run Registration**
 
 The module will run affine + nonlinear (SVF) registration and create a grid transform node. If **Apply output transform to moving** is checked, the transform is automatically applied to the moving volume.
@@ -71,7 +73,7 @@ The module will run affine + nonlinear (SVF) registration and create a grid tran
 
 ### Output Transform
 
-Each registration run creates a new grid transform named, eg, `NITorch_001_lcc_fixed_to_moving` (with incrementing counter and loss name). Use the **Output Transform** selector to switch between previously computed transforms.
+Each registration run creates a new grid transform named, e.g., `NITorch_001_lcc_fixed_to_moving` (with incrementing counter and loss name). Use the **Output Transform** selector to switch between previously computed transforms.
 
 ### Parameters
 
@@ -99,7 +101,7 @@ The **Log** section shows real-time registration progress including loss values 
 
 ### Visualization
 
-The **Visualization** section provides tools for comparing fixed and moving volumes after registration. Controls are greyed out until both fixed and moving volumes are selected.
+The **Visualization** section provides tools for comparing fixed and moving volumes after registration. Controls are grayed out until both fixed and moving volumes are selected.
 
 - **Enable comparison view** — overlays fixed (background) and moving (foreground) in the slice views with alpha blending. Links slice views and enables the crosshair. Unchecking restores the previous view layout.
 - **Contours** — overlays iso-contour edges of the moving image on the fixed image (red outlines)
