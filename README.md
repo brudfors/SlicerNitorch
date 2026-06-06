@@ -1,4 +1,4 @@
-# NITorch Register: 3D Slicer Module for Image Registration
+# SliceNitorch: 3D Slicer Module for Image Registration
 
 GPU-accelerated affine + nonlinear 3D image registration powered by [NITorch](https://github.com/balbasty/nitorch) in [3D Slicer](https://download.slicer.org/).
 
