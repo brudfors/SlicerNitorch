@@ -12,7 +12,8 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
              nl_max_iter=64, nl_tolerance=1e-3,
              outer_max_iter=64, outer_tolerance=1e-3,
              pyramid_levels=None, bound='zero', crit='diff',
-             affine_only=False, device='cpu', verbose=1):
+             affine_only=False, init_affine=None,
+             device='cpu', verbose=1):
     """Run affine + nonlinear (SVF) registration.
 
     All inputs are in-memory tensors — no file I/O.
@@ -49,6 +50,12 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
         Convergence tolerance for outer interleaved optimization.
     pyramid_levels : list of int or None
         Pyramid levels (default: [0, 1, 2]).
+    affine_only : bool
+        If True, run affine registration only and return (affine_sqrt, None, None).
+    init_affine : torch.Tensor or None
+        (4, 4) affine to warm-start the affine model from. Decomposed into
+        affine_basis, so it round-trips exactly only when affine_basis matches the
+        basis that produced it.
     device : str
         Torch device ('cpu' or 'cuda:N').
     verbose : bool
@@ -127,8 +134,13 @@ def register(fixed_dat, fixed_affine, moving_dat, moving_affine, loss_name,
     similarity = objects.Similarity(loss_obj, mov_img, fix_img)
     loss_list = sequential_pyramid(similarity)
 
-    # Affine model
-    affine_model = make_affine(basis=affine_basis, position='symmetric')
+    # Affine model — optionally warm-started from a known affine (init_affine).
+    # The 4x4 is decomposed into the same basis as pass 1, so it round-trips
+    # exactly when both passes share affine_basis.
+    if init_affine is not None:
+        init_affine = init_affine.to(dtype=torch.float64, device=device)
+    affine_model = make_affine(
+        basis=affine_basis, position='symmetric', init=init_affine)
 
     # Optimizers
     order = loss_obj.order

@@ -187,6 +187,17 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.movingSelector.setToolTip("Select the moving volume.")
         regLayout.addRow("Moving:", self.movingSelector)
 
+        # Registration mode (Automatic is the default)
+        self.registrationModeCombo = qt.QComboBox()
+        self.registrationModeCombo.addItem(
+            "Automatic (NMI affine → LCC)", "auto")
+        self.registrationModeCombo.addItem("Manual", "manual")
+        self.registrationModeCombo.setToolTip(
+            "Automatic: a pure-affine NMI pass, then a combined affine + nonlinear "
+            "(SVF) LCC pass warm-started from that affine (intensity images only). "
+            "Manual: a single pass using the loss and options below.")
+        regLayout.addRow("Registration Mode:", self.registrationModeCombo)
+
         # Categorical checkbox
         self.categoricalCheck = qt.QCheckBox("Categorical (label maps)")
         self.categoricalCheck.checked = False
@@ -204,6 +215,16 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.lossCombo.addItem(label, value)
         self.lossCombo.setToolTip("Similarity metric for registration.")
         regLayout.addRow("Loss Function:", self.lossCombo)
+
+        # Lambda (nonlinear regularization strength) — kept at the top level
+        # so it is always editable, in both Automatic and Manual modes.
+        self.regLambdaSpin = qt.QDoubleSpinBox()
+        self.regLambdaSpin.setRange(0.01, 1000.0)
+        self.regLambdaSpin.setSingleStep(1.0)
+        self.regLambdaSpin.setValue(10.0)
+        self.regLambdaSpin.setToolTip(
+            "Global scaling factor applied to all individual penalty values.")
+        regLayout.addRow("Lambda:", self.regLambdaSpin)
 
         # Device
         self.deviceCombo = qt.QComboBox()
@@ -257,6 +278,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         advancedCollapsible.text = "Parameters"
         advancedCollapsible.collapsed = False
         regLayout.addRow(advancedCollapsible)
+        self.parametersCollapsible = advancedCollapsible
 
         advancedLayout = qt.QFormLayout(advancedCollapsible)
 
@@ -282,14 +304,6 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "Comma-separated pyramid levels (0=finest). "
             "More levels = coarser initial alignment.")
         advancedLayout.addRow("Pyramid Levels:", self.pyramidLevelsEdit)
-
-        self.regLambdaSpin = qt.QDoubleSpinBox()
-        self.regLambdaSpin.setRange(0.01, 1000.0)
-        self.regLambdaSpin.setSingleStep(1.0)
-        self.regLambdaSpin.setValue(10.0)
-        self.regLambdaSpin.setToolTip(
-            "Global scaling factor applied to all individual penalty values.")
-        advancedLayout.addRow("Lambda Global:", self.regLambdaSpin)
 
         self.affMaxIterSpin = qt.QSpinBox()
         self.affMaxIterSpin.setRange(1, 1000)
@@ -584,6 +598,7 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # --- Connections ---
         self.fixedSelector.currentNodeChanged.connect(self._updateRegButtonState)
         self.movingSelector.currentNodeChanged.connect(self._updateRegButtonState)
+        self.registrationModeCombo.currentIndexChanged.connect(self._onModeChanged)
         self.registerButton.clicked.connect(self._onRegister)
 
         self.applyTransformCheck.toggled.connect(self._onApplyTransformToggled)
@@ -599,16 +614,52 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.computeDiceButton.clicked.connect(self._onComputeDice)
         self.diceResultSelector.currentIndexChanged.connect(self._onDiceResultSelected)
 
+        # Apply the initial registration-mode state (Automatic by default).
+        self._onModeChanged(self.registrationModeCombo.currentIndex)
+
     # -----------------------------------------------------------------
     # UI helpers
     # -----------------------------------------------------------------
+
+    def _parameterWidgets(self):
+        """All Parameters/Advanced input widgets (used for bulk enable/disable)."""
+        # Note: regLambdaSpin (Lambda) is intentionally NOT here — it lives at
+        # the top level and stays editable in every mode.
+        return [
+            self.affineBasisCombo, self.affineOnlyCheck, self.pyramidLevelsEdit,
+            self.affMaxIterSpin, self.affTolSpin,
+            self.outerMaxIterSpin, self.outerTolSpin, self.nlMaxIterSpin,
+            self.nlTolSpin, self.boundCombo, self.critCombo, self.verboseCombo,
+            self.penAbsoluteSpin, self.penMembraneSpin, self.penBendingSpin,
+            self.penLameEdit,
+        ]
+
+    def _onModeChanged(self, _index=None):
+        """Disable manual-only controls in Automatic mode.
+
+        Automatic mode is a preset: it controls the loss (NMI then LCC), is
+        intensity-only, and uses fixed parameter values, so the Categorical / Loss
+        controls and the whole Parameters + Advanced section are grayed out.
+        """
+        auto = self.registrationModeCombo.currentData == "auto"
+        if auto:
+            # Force intensity losses (repopulates lossCombo via the toggle).
+            self.categoricalCheck.checked = False
+        self.categoricalCheck.enabled = not auto
+        self.lossCombo.enabled = not auto
+        for w in self._parameterWidgets():
+            w.enabled = not auto
+        # Collapse the Parameters section in Automatic mode; expand it in Manual.
+        self.parametersCollapsible.collapsed = auto
+        if not auto:
+            # Back in Manual: restore nonlinear-param enablement from Affine-Only.
+            self._onAffineOnlyToggled(self.affineOnlyCheck.checked)
 
     def _onAffineOnlyToggled(self, checked):
         """Enable/disable nonlinear-specific parameters."""
         enabled = not checked
         self.outerMaxIterSpin.enabled = enabled
         self.outerTolSpin.enabled = enabled
-        self.regLambdaSpin.enabled = enabled
         self.penAbsoluteSpin.enabled = enabled
         self.penMembraneSpin.enabled = enabled
         self.penBendingSpin.enabled = enabled
@@ -1193,15 +1244,26 @@ class NITorchRegisterWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "apply_transform": bool(self.applyTransformCheck.checked),
         }
 
+        auto = self.registrationModeCombo.currentData == "auto"
         self.registerButton.enabled = False
         self.statusLabel.text = "Running registration..."
         slicer.app.processEvents()
 
         try:
-            NITorchRegisterWidget._regCounter += 1
-            counter = NITorchRegisterWidget._regCounter
-            elapsed, transformNode = self.logic.runRegistration(
-                fixedNode, movingNode, params, self.logText, counter)
+            if auto:
+                # Two passes (NMI affine → frozen-affine LCC SVF), two transforms.
+                NITorchRegisterWidget._regCounter += 1
+                counterAffine = NITorchRegisterWidget._regCounter
+                NITorchRegisterWidget._regCounter += 1
+                counterFinal = NITorchRegisterWidget._regCounter
+                elapsed, _affineNode, transformNode = self.logic.runAutoRegistration(
+                    fixedNode, movingNode, params, self.logText,
+                    counterAffine, counterFinal)
+            else:
+                NITorchRegisterWidget._regCounter += 1
+                counter = NITorchRegisterWidget._regCounter
+                elapsed, transformNode = self.logic.runRegistration(
+                    fixedNode, movingNode, params, self.logText, counter)
             # Select new transform in combo (triggers _onTransformSelected
             # which applies it if checkbox is checked)
             self.transformSelector.setCurrentNode(transformNode)
@@ -1248,26 +1310,11 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
             The loaded grid transform node.
         """
         import torch
-        import numpy as np
         from NITorchRegisterLib.registration import register
-        from NITorchRegisterLib.grid_transform import (
-            compose_deformation_grid,
-            grid_to_slicer_displacement,
-        )
 
         loss_name = params["loss_name"]
-        device = params["device"]
+        device = self._resolveDevice(params["device"])
         is_label = params["is_label"]
-
-        # Fall back to CPU if a CUDA device was requested but is unavailable.
-        # Done here (not inside register()) because `device` also flows to the
-        # grid-composition calls below; a fallback buried in register() would
-        # leave them with a stale "cuda:N" and cause a device mismatch.
-        if str(device).startswith("cuda") and not torch.cuda.is_available():
-            logging.warning(
-                "CUDA requested (%s) but unavailable; falling back to CPU.",
-                device)
-            device = "cpu"
 
         t_start = time.time()
         transformNode = None
@@ -1278,22 +1325,10 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
         sys.stdout = capture
 
         try:
-            # Extract data from Slicer nodes (no disk I/O)
             print("Preparing volumes...")
-
-            # Slicer arrayFromVolume returns (K, J, I) — transpose to (I, J, K)
-            fixed_np = np.transpose(
-                slicer.util.arrayFromVolume(fixedNode).astype(np.float64))
-            moving_np = np.transpose(
-                slicer.util.arrayFromVolume(movingNode).astype(np.float64))
-
-            fixed_dat = torch.from_numpy(fixed_np)
-            moving_dat = torch.from_numpy(moving_np)
-
-            # Get IJK-to-RAS affine matrices
-            fixed_affine = self._getIJKToRASMatrix(fixedNode)
-            moving_affine = self._getIJKToRASMatrix(movingNode)
-            fixed_shape = tuple(fixed_dat.shape[:3])
+            (fixed_dat, fixed_affine, moving_dat,
+             moving_affine, fixed_shape) = self._prepareInputs(
+                fixedNode, movingNode)
 
             # Run registration
             print(f"Starting registration (device={device}, loss={loss_name})...\n")
@@ -1322,28 +1357,14 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
                 verbose=params.get("verbose", 1),
             )
 
-            # Compose deformation grid
             print("\nComposing deformation grid...")
             slicer.app.processEvents()
-            grid = compose_deformation_grid(
-                fixed_shape, fixed_affine, affine_sqrt,
-                displacement, disp_affine, device=device,
-            )
-
-            # Create grid transform
-            print("Creating grid transform...")
-            slicer.app.processEvents()
-            disp_np = grid_to_slicer_displacement(
-                grid, fixed_shape, fixed_affine, device=device)
-            fixed_affine_np = fixed_affine.cpu().numpy().astype(np.float64)
-
-            transformNode = self._createGridTransformNode(
-                disp_np, fixed_affine_np, fixed_shape)
-
             mode_str = "affine" if affine_only else params['loss_name']
-            transformNode.SetName(
-                f"NITorch_{counter:03d}_{mode_str}_"
-                f"{fixedNode.GetName()}_to_{movingNode.GetName()}")
+            name = (f"NITorch_{counter:03d}_{mode_str}_"
+                    f"{fixedNode.GetName()}_to_{movingNode.GetName()}")
+            transformNode = self._buildTransformNode(
+                affine_sqrt, displacement, disp_affine,
+                fixed_shape, fixed_affine, device, name)
 
             elapsed = time.time() - t_start
             print(f"\nRegistration complete in {elapsed:.1f}s "
@@ -1354,6 +1375,169 @@ class NITorchRegisterLogic(ScriptedLoadableModuleLogic):
             sys.stdout = old_stdout
 
         return elapsed, transformNode
+
+    def runAutoRegistration(self, fixedNode, movingNode, params, logWidget,
+                            counter_affine, counter_final):
+        """Run the two-pass automatic pipeline (blocking, main thread).
+
+        Pass 1 is affine-only with NMI. Pass 2 holds that affine fixed and fits a
+        nonlinear SVF with LCC, using one extra (coarser) pyramid level. Both
+        passes use the same affine basis, so the pass-1 affine seeds pass 2
+        exactly. Intensity-only (is_label is forced False).
+
+        Returns
+        -------
+        elapsed : float
+            Total time in seconds.
+        affineNode : vtkMRMLGridTransformNode
+            The intermediate affine (pass 1) transform.
+        finalNode : vtkMRMLGridTransformNode
+            The final affine+SVF (pass 2) transform.
+        """
+        import torch
+        from NITorchRegisterLib.registration import register
+
+        device = self._resolveDevice(params["device"])
+        basis = params["affine_basis"]
+        # Both passes share the same coarse-to-fine pyramid.
+        pyramid = params.get("pyramid_levels") or [0, 1, 2]
+
+        t_start = time.time()
+        affineNode = None
+        finalNode = None
+
+        capture = _LogCapture(logWidget, sys.stdout)
+        old_stdout = sys.stdout
+        sys.stdout = capture
+
+        try:
+            print("Preparing volumes...")
+            (fixed_dat, fixed_affine, moving_dat,
+             moving_affine, fixed_shape) = self._prepareInputs(
+                fixedNode, movingNode)
+
+            # Pass 1: affine-only, NMI
+            print(f"\n=== Pass 1/2: affine (NMI), device={device} ===")
+            slicer.app.processEvents()
+            affine_sqrt_1, _, _ = register(
+                fixed_dat, fixed_affine, moving_dat, moving_affine, "nmi",
+                is_label=False,
+                affine_basis=basis,
+                aff_max_iter=params["aff_max_iter"],
+                aff_tolerance=params["aff_tolerance"],
+                pyramid_levels=pyramid,
+                bound=params.get("bound", "dct2"),
+                crit=params.get("crit", "diff"),
+                affine_only=True,
+                device=device,
+                verbose=params.get("verbose", 1),
+            )
+            with torch.no_grad():
+                M1 = affine_sqrt_1 @ affine_sqrt_1  # full affine from the two halves
+
+            # Pass 2: combined affine + nonlinear SVF with LCC, warm-started from
+            # the pass-1 NMI affine (M1); the affine is free to refine.
+            print(f"\n=== Pass 2/2: affine + nonlinear SVF (LCC), device={device} ===")
+            slicer.app.processEvents()
+            affine_sqrt_2, displacement_2, disp_affine_2 = register(
+                fixed_dat, fixed_affine, moving_dat, moving_affine, "lcc",
+                is_label=False,
+                affine_basis=basis,
+                reg_lambda=params["reg_lambda"],
+                penalty_absolute=params["penalty_absolute"],
+                penalty_membrane=params["penalty_membrane"],
+                penalty_bending=params["penalty_bending"],
+                penalty_lame=params["penalty_lame"],
+                aff_max_iter=params["aff_max_iter"],
+                aff_tolerance=params["aff_tolerance"],
+                nl_max_iter=params["nl_max_iter"],
+                nl_tolerance=params["nl_tolerance"],
+                outer_max_iter=params["outer_max_iter"],
+                outer_tolerance=params["outer_tolerance"],
+                pyramid_levels=pyramid,
+                bound=params.get("bound", "dct2"),
+                crit=params.get("crit", "diff"),
+                affine_only=False,
+                init_affine=M1,
+                device=device,
+                verbose=params.get("verbose", 1),
+            )
+
+            # Build both transforms (intermediate affine + final)
+            print("\nComposing transforms...")
+            slicer.app.processEvents()
+            suffix = f"{fixedNode.GetName()}_to_{movingNode.GetName()}"
+            affineNode = self._buildTransformNode(
+                affine_sqrt_1, None, None, fixed_shape, fixed_affine, device,
+                f"NITorch_{counter_affine:03d}_auto_affine_{suffix}")
+            finalNode = self._buildTransformNode(
+                affine_sqrt_2, displacement_2, disp_affine_2,
+                fixed_shape, fixed_affine, device,
+                f"NITorch_{counter_final:03d}_auto_nonlin_{suffix}")
+
+            elapsed = time.time() - t_start
+            print(f"\nAutomatic registration complete in {elapsed:.1f}s "
+                  f"({elapsed / 60:.1f}min).")
+
+        finally:
+            capture.flush()
+            sys.stdout = old_stdout
+
+        return elapsed, affineNode, finalNode
+
+    @staticmethod
+    def _resolveDevice(device):
+        """Return device, falling back to CPU if CUDA was requested but absent.
+
+        Done in the logic layer (not inside register()) because `device` also
+        flows to the grid-composition calls; a fallback buried in register()
+        would leave those with a stale "cuda:N" and cause a device mismatch.
+        """
+        import torch
+        if str(device).startswith("cuda") and not torch.cuda.is_available():
+            logging.warning(
+                "CUDA requested (%s) but unavailable; falling back to CPU.",
+                device)
+            return "cpu"
+        return device
+
+    def _prepareInputs(self, fixedNode, movingNode):
+        """Extract tensors and affines from two volume nodes (no disk I/O).
+
+        Returns (fixed_dat, fixed_affine, moving_dat, moving_affine, fixed_shape).
+        """
+        import torch
+        import numpy as np
+        # Slicer arrayFromVolume returns (K, J, I) — transpose to (I, J, K)
+        fixed_np = np.transpose(
+            slicer.util.arrayFromVolume(fixedNode).astype(np.float64))
+        moving_np = np.transpose(
+            slicer.util.arrayFromVolume(movingNode).astype(np.float64))
+        fixed_dat = torch.from_numpy(fixed_np)
+        moving_dat = torch.from_numpy(moving_np)
+        fixed_affine = self._getIJKToRASMatrix(fixedNode)
+        moving_affine = self._getIJKToRASMatrix(movingNode)
+        fixed_shape = tuple(fixed_dat.shape[:3])
+        return fixed_dat, fixed_affine, moving_dat, moving_affine, fixed_shape
+
+    def _buildTransformNode(self, affine_sqrt, displacement, disp_affine,
+                            fixed_shape, fixed_affine, device, name):
+        """Compose a deformation grid and create a named grid transform node."""
+        import numpy as np
+        from NITorchRegisterLib.grid_transform import (
+            compose_deformation_grid,
+            grid_to_slicer_displacement,
+        )
+        grid = compose_deformation_grid(
+            fixed_shape, fixed_affine, affine_sqrt,
+            displacement, disp_affine, device=device,
+        )
+        disp_np = grid_to_slicer_displacement(
+            grid, fixed_shape, fixed_affine, device=device)
+        fixed_affine_np = fixed_affine.cpu().numpy().astype(np.float64)
+        node = self._createGridTransformNode(disp_np, fixed_affine_np, fixed_shape)
+        node.SetName(name)
+        return node
 
     @staticmethod
     def _getIJKToRASMatrix(volumeNode):
@@ -1464,6 +1648,8 @@ class NITorchRegisterTest(ScriptedLoadableModuleTest):
         self.test_GridTransformNode()
         self.setUp()
         self.test_RegistrationSmoke()
+        self.setUp()
+        self.test_AutoRegistrationSmoke()
 
     def test_DiceScores(self):
         """compute_dice_scores returns exact values for known overlaps."""
@@ -1579,3 +1765,63 @@ class NITorchRegisterTest(ScriptedLoadableModuleTest):
         self.assertGreater(elapsed, 0.0)
 
         self.delayDisplay("test_RegistrationSmoke passed")
+
+    def test_AutoRegistrationSmoke(self):
+        """End-to-end two-pass automatic registration on tiny volumes (CPU)."""
+        self.delayDisplay("Starting test_AutoRegistrationSmoke")
+        try:
+            import nitorch  # noqa: F401
+        except ImportError:
+            self.delayDisplay("nitorch not installed — skipping smoke test")
+            return
+
+        import numpy as np
+
+        def _makeVolume(name, cube_origin):
+            arr = np.zeros((16, 16, 16), dtype=np.float32)
+            ox, oy, oz = cube_origin
+            arr[ox:ox + 6, oy:oy + 6, oz:oz + 6] = 100.0
+            node = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLScalarVolumeNode", name)
+            slicer.util.updateVolumeFromArray(node, arr)
+            return node
+
+        fixedNode = _makeVolume("autoFixed", (5, 5, 5))
+        movingNode = _makeVolume("autoMoving", (7, 6, 5))
+
+        params = {
+            "device": "cpu",
+            "affine_basis": "translation",
+            "pyramid_levels": [0],
+            "reg_lambda": 5,
+            "penalty_absolute": 0.0001,
+            "penalty_membrane": 0.001,
+            "penalty_bending": 0.2,
+            "penalty_lame": (0.05, 0.2),
+            "aff_max_iter": 5,
+            "aff_tolerance": 1e-4,
+            "nl_max_iter": 2,
+            "nl_tolerance": 1e-3,
+            "outer_max_iter": 1,
+            "outer_tolerance": 1e-3,
+            "bound": "zero",
+            "crit": "diff",
+            "verbose": 0,
+        }
+
+        logic = NITorchRegisterLogic()
+        logWidget = qt.QPlainTextEdit()
+        elapsed, affineNode, finalNode = logic.runAutoRegistration(
+            fixedNode, movingNode, params, logWidget,
+            counter_affine=1, counter_final=2)
+
+        self.assertIsNotNone(affineNode)
+        self.assertIsNotNone(finalNode)
+        self.assertTrue(affineNode.IsA("vtkMRMLGridTransformNode"))
+        self.assertTrue(finalNode.IsA("vtkMRMLGridTransformNode"))
+        self.assertIsNot(affineNode, finalNode)
+        self.assertIn("auto_affine", affineNode.GetName())
+        self.assertIn("auto_nonlin", finalNode.GetName())
+        self.assertGreater(elapsed, 0.0)
+
+        self.delayDisplay("test_AutoRegistrationSmoke passed")
